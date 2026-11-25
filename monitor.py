@@ -208,7 +208,7 @@ def _load_saved_proxy() -> str:
     return ""
 
 def load_indian_proxies() -> list:
-    """Fetches fresh free Indian (IN) HTTP/SOCKS proxies from multiple public feeds."""
+    """Fetches fresh free HTTPS/SOCKS5 proxies (prioritizing India, then global HTTPS/SOCKS5)."""
     global CACHED_PROXY_POOL
     if CACHED_PROXY_POOL:
         return CACHED_PROXY_POOL
@@ -226,22 +226,22 @@ def load_indian_proxies() -> list:
             seen_p.add(p)
             found.append(p)
 
-    # 1. Proxifly IN feed via jsDelivr (pre-checked every 5 mins)
+    # 1. Proxifly India feed (all protocols)
     for url in [
         "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/countries/IN/data.txt",
-        "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/countries/IN/data.txt",
+        "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/countries/SG/data.txt",
+        "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/countries/AE/data.txt",
     ]:
         try:
             r = requests.get(url, timeout=6)
             if r.status_code == 200 and len(r.text) > 10:
                 for line in r.text.splitlines():
                     _add(line)
-                break
         except Exception:
             pass
 
     # 2. ProxyScrape v4 (India HTTP & SOCKS5)
-    for proto in ("http", "socks5"):
+    for proto in ("socks5", "http"):
         try:
             u = f"https://api.proxyscrape.com/v4/free-proxy-list/get?request=displayproxies&protocol={proto}&country=in&timeout=5000"
             r = requests.get(u, timeout=6)
@@ -253,24 +253,24 @@ def load_indian_proxies() -> list:
         except Exception:
             pass
 
-    # 3. Geonode India proxy API
-    try:
-        u = "https://proxylist.geonode.com/api/proxy-list?country=IN&limit=30&page=1&sort_by=lastChecked&sort_type=desc"
-        r = requests.get(u, timeout=6)
-        if r.status_code == 200:
-            for item in r.json().get("data", []):
-                ip = item.get("ip")
-                port = item.get("port")
-                protos = item.get("protocols") or ["http"]
-                if ip and port:
-                    _add(f"{protos[0]}://{ip}:{port}")
-    except Exception:
-        pass
+    # 3. Proxifly pre-verified HTTPS & SOCKS5 global feeds (often support CONNECT tunneling cleanly)
+    for url in [
+        "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/https/data.txt",
+        "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/socks5/data.txt",
+    ]:
+        try:
+            r = requests.get(url, timeout=6)
+            if r.status_code == 200 and len(r.text) > 10:
+                lines = [ln.strip() for ln in r.text.splitlines() if ln.strip()]
+                for line in lines[:35]:
+                    _add(line)
+        except Exception:
+            pass
 
-    # Prioritize http/https/socks5 proxies first
-    found.sort(key=lambda x: 0 if x.startswith(("http://", "https://")) else (1 if x.startswith("socks5") else 2))
-    CACHED_PROXY_POOL = found[:60]
-    log.info("  🌐 Loaded %d Indian proxy candidates", len(CACHED_PROXY_POOL))
+    # Prioritize HTTPS & SOCKS5 first (actually support SSL CONNECT), then HTTP
+    found.sort(key=lambda x: 0 if x.startswith("https://") else (1 if x.startswith("socks5") else 2))
+    CACHED_PROXY_POOL = found[:80]
+    log.info("  🌐 Loaded %d HTTPS/SOCKS5/IN proxy candidates", len(CACHED_PROXY_POOL))
     return CACHED_PROXY_POOL
 
 def _fetch_via_proxy(proxy_str: str, url: str, timeout: int = 7):
@@ -294,10 +294,39 @@ def _fetch_via_proxy(proxy_str: str, url: str, timeout: int = 7):
                 verify=False,
                 allow_redirects=True,
             )
-        if resp.status_code == 200 and len(resp.text) > 200 and "<html" in resp.text.lower():
-            return proxy_str, resp.text
+        body_low = resp.text.lower()
+        if resp.status_code == 200 and len(resp.text) > 400 and "<html" in body_low and "403 forbidden" not in body_low[:400]:
+            return proxy_str, resp.text, 200
+        return None, None, resp.status_code
     except Exception:
-        pass
+        return None, None, None
+
+def _fetch_via_jina(url: str) -> tuple:
+    """Try Jina Reader API with X-Respond-With: html (renders page in headless browser)."""
+    try:
+        jina_url = f"https://r.jina.ai/{url}"
+        resp = requests.get(
+            jina_url,
+            headers={
+                "X-Respond-With": "html",
+                "User-Agent": CHROME_HEADERS["User-Agent"],
+                "Accept": "text/html,*/*;q=0.8",
+            },
+            timeout=18,
+        )
+        body_low = resp.text.lower()
+        if (
+            resp.status_code == 200
+            and len(resp.text) > 500
+            and "<html" in body_low
+            and "403 forbidden" not in body_low[:500]
+            and ("agniveer" in body_low or "edcil" in body_low or "psl" in body_low)
+        ):
+            log.info("  ✅ [Jina Reader] HTTP 200 HTML fetched for %s (%d bytes)", url.split("/")[-1] or "home", len(resp.text))
+            return 200, resp.text
+        log.info("  [Jina Reader] HTTP %d (%d bytes) for %s", resp.status_code, len(resp.text), url.split("/")[-1] or "home")
+    except Exception as e:
+        log.warning("  [Jina Reader] Error: %s", str(e)[:90])
     return None, None
 
 def fetch_page(url: str) -> tuple:
@@ -347,37 +376,50 @@ def fetch_page(url: str) -> tuple:
         except Exception as e:
             log.warning("  [Direct] Error: %s", str(e)[:80])
 
-    # Method 2: Try previously cached Indian proxy first
+    # Method 2: Try previously cached proxy first
     saved_p = _load_saved_proxy()
     if saved_p:
-        ok_p, ok_html = _fetch_via_proxy(saved_p, url, timeout=8)
+        ok_p, ok_html, _ = _fetch_via_proxy(saved_p, url, timeout=8)
         if ok_html:
             LAST_WORKING_METHOD = "in_proxy"
-            log.info("  ✅ [IN-Proxy Cached] HTTP 200 via %s", ok_p.split("@")[-1])
+            log.info("  ✅ [Proxy Cached] HTTP 200 via %s", ok_p.split("@")[-1])
             return 200, ok_html, "Indian Proxy"
         CACHED_IN_PROXY = None
 
-    # Method 3: Parallel scan across live Indian proxies
+    # Method 3: Try Jina Reader HTML renderer FIRST (instant, 1 call if not blocked)
+    if LAST_WORKING_METHOD in (None, "jina"):
+        j_code, j_html = _fetch_via_jina(url)
+        if j_html:
+            LAST_WORKING_METHOD = "jina"
+            return 200, j_html, "Web Proxy (Jina)"
+
+    # Method 4: Parallel scan across HTTPS/SOCKS5/IN proxies
     candidates = load_indian_proxies()
     if not candidates:
         CACHED_PROXY_POOL = []
         candidates = load_indian_proxies()
 
     batch_size = 20
+    seen_codes = {}
     for i in range(0, len(candidates), batch_size):
         batch = candidates[i:i + batch_size]
         pool = ThreadPoolExecutor(max_workers=len(batch))
         try:
             futures = [pool.submit(_fetch_via_proxy, p, url, 7) for p in batch]
             for fut in as_completed(futures):
-                ok_p, ok_html = fut.result()
+                ok_p, ok_html, p_code = fut.result()
+                if p_code:
+                    seen_codes[p_code] = seen_codes.get(p_code, 0) + 1
                 if ok_html:
                     _save_working_proxy(ok_p)
                     LAST_WORKING_METHOD = "in_proxy"
-                    log.info("  ✅ [IN-Proxy Found] HTTP 200 via %s", ok_p)
-                    return 200, ok_html, "Indian Proxy"
+                    log.info("  ✅ [Proxy Found] HTTP 200 via %s", ok_p)
+                    return 200, ok_html, "Proxy Tunnel"
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
+
+    if seen_codes:
+        log.info("  📊 Proxy response summary: %s", seen_codes)
 
     # Reset proxy pool for next run if none worked this batch
     CACHED_PROXY_POOL = []
