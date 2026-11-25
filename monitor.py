@@ -489,7 +489,16 @@ def fetch_pdf(url: str) -> bytes | None:
     return None
 
 # ─── TELEGRAM API ─────────────────────────────────────────────────────────
-def send_msg(chat_id: str, text: str, reply_markup: dict = None):
+def remove_registered_chat(chat_id: str, chats: set = None):
+    if chats is not None:
+        chats.discard(chat_id)
+    if CHATS_FILE.exists():
+        lines = [ln.strip() for ln in CHATS_FILE.read_text(encoding="utf-8").splitlines()
+                 if ln.strip() and ln.strip() != chat_id]
+        CHATS_FILE.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+
+def send_msg(chat_id: str, text: str, reply_markup: dict = None) -> str:
+    """Returns 'ok', 'kicked', or 'error'."""
     if len(text) > MAX_TG_MSG_LEN:
         text = text[:MAX_TG_MSG_LEN]
     try:
@@ -508,6 +517,8 @@ def send_msg(chat_id: str, text: str, reply_markup: dict = None):
         )
         if not r.ok:
             log.warning("Telegram API error for %s (%d): %s", chat_id, r.status_code, r.text[:200])
+            if r.status_code in (400, 403) and any(k in r.text.lower() for k in ("kicked", "blocked", "chat not found")):
+                return "kicked"
             if reply_markup:
                 payload.pop("reply_markup", None)
                 requests.post(
@@ -515,12 +526,17 @@ def send_msg(chat_id: str, text: str, reply_markup: dict = None):
                     data=payload,
                     timeout=15,
                 )
+        return "ok" if r.ok else "error"
     except Exception as e:
         log.error("Send msg failed for %s: %s", chat_id, e)
+        return "error"
 
 def broadcast(text: str, chats: set):
     for cid in list(chats):
-        send_msg(cid, text)
+        res = send_msg(cid, text)
+        if res == "kicked":
+            remove_registered_chat(cid, chats)
+            log.info("  🧹 Removed dead/kicked chat: %s", cid)
 
 def send_pdf(chat_id: str, pdf_bytes: bytes, filename: str, caption: str) -> bool:
     if len(pdf_bytes) > MAX_TG_FILE_BYTES:
