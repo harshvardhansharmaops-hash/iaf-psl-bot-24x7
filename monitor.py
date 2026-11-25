@@ -35,7 +35,7 @@ except ImportError:
 # ─── CONFIGURATION ────────────────────────────────────────────────────────
 BOT_TOKEN          = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 PROXY_URL          = os.getenv("PROXY_URL", "").strip()  # Optional HTTP/HTTPS/SOCKS proxy secret
-CHAT_IDS           = [c.strip() for c in os.getenv("CHAT_IDS", "8960222553,-1004472936994").split(",") if c.strip()]
+CHAT_IDS           = [c.strip() for c in os.getenv("CHAT_IDS", "8960222553").split(",") if c.strip()]
 RUN_DURATION_SEC   = int(os.getenv("RUN_DURATION_SEC", "225"))   # ~3m 45s active loop per 5-min cron run
 CHECK_INTERVAL_SEC = int(os.getenv("CHECK_INTERVAL_SEC", "60"))  # Check EDCIL every 60 seconds
 
@@ -393,20 +393,7 @@ def fetch_page(url: str) -> tuple:
             return 200, ok_html, "Indian Proxy"
         CACHED_IN_PROXY = None
 
-    # Method 3: Try Google Translate HTML proxy fallback (free, non-Azure/AWS edge)
-    try:
-        tr_url = url.replace("https://iafrecruitment.edcil.co.in/", "https://iafrecruitment-edcil-co-in.translate.goog/")
-        sep = "&" if "?" in tr_url else "?"
-        tr_url = f"{tr_url}{sep}_x_tr_sl=auto&_x_tr_tl=en&_x_tr_hl=en"
-        r_tr = requests.get(tr_url, headers=CHROME_HEADERS, timeout=10, verify=False, allow_redirects=True)
-        if r_tr.status_code == 200 and len(r_tr.text) > 500 and "403 forbidden" not in r_tr.text.lower()[:400]:
-            log.info("  ✅ [Translate Proxy] HTTP 200 for %s", url.split("/")[-1] or "home")
-            return 200, r_tr.text, "Translate Proxy"
-        log.info("  [Translate Proxy] HTTP %d (%d bytes)", r_tr.status_code, len(r_tr.text))
-    except Exception as e:
-        log.info("  [Translate Proxy] Error: %s", str(e)[:60])
-
-    # Method 4: Parallel scan across HTTPS/SOCKS5/IN proxies
+    # Method 3: Parallel scan across HTTPS/SOCKS5/IN proxies
     candidates = load_indian_proxies()
     if not candidates:
         CACHED_PROXY_POOL = []
@@ -597,6 +584,7 @@ def is_psl_pdf(name: str) -> bool:
         "guideline", "brochure", "application_form", "syllabus", "model",
         "normalisation", "exam", "instructions", "omr", "tutorial", "mock",
         "diploma", "checklist", "nc_", "non-combatant",
+        "2023", "2024", "2025", "01_2025", "02_2025", "01_2026",
     ]
     if any(b in clean for b in blacklist):
         return False
@@ -812,6 +800,7 @@ def run_check(chats: set, stats: dict, send_heartbeat: bool = False) -> str:
             f"<i>(Band karne ke liye: <code>/heartbeat off</code>)</i>"
         )
         broadcast(hb_msg, chats)
+        log.info("  📤 Sent 5-min tracker update to %d chat(s)", len(chats))
 
     return summary
 
