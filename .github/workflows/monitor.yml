@@ -5,7 +5,12 @@ on:
     # Har 5 minute me run + andar ~4 min continuous loop (har 60 sec check)
     # Note: Public repo = unlimited free GitHub Actions minutes
     - cron: '*/5 * * * *'
-  workflow_dispatch:  # GitHub se manually bhi "Run workflow" kar sakte ho
+  workflow_dispatch:
+    inputs:
+      fast_test:
+        description: 'Run 1 quick test cycle (true/false)'
+        required: false
+        default: 'false'
 
 # ⚡ YE LINE ZAROORI HAI — iske bina state files commit nahi hongi!
 permissions:
@@ -39,7 +44,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           PROXY_URL: ${{ secrets.PROXY_URL }}
           CHAT_IDS: "8960222553,-1004472936994"
-          RUN_DURATION_SEC: "225"
+          RUN_DURATION_SEC: ${{ inputs.fast_test == 'true' && '15' || '225' }}
           CHECK_INTERVAL_SEC: "60"
         run: python monitor.py
 
