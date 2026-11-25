@@ -1,0 +1,55 @@
+name: IAF PSL 24x7 Monitor
+
+on:
+  schedule:
+    # Har 5 minute me run + andar ~4 min continuous loop (har 60 sec check)
+    # Note: Public repo = unlimited free GitHub Actions minutes
+    - cron: '*/5 * * * *'
+  workflow_dispatch:  # GitHub se manually bhi "Run workflow" kar sakte ho
+
+# ⚡ YE LINE ZAROORI HAI — iske bina state files commit nahi hongi!
+permissions:
+  contents: write
+
+# Ek time par sirf ek run chalega (git push conflict nahi hoga)
+concurrency:
+  group: iaf-psl-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run IAF Monitor (60s Loop for ~4 mins)
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          PROXY_URL: ${{ secrets.PROXY_URL }}
+          CHAT_IDS: "8960222553,-1004472936994"
+          RUN_DURATION_SEC: "225"
+          CHECK_INTERVAL_SEC: "60"
+        run: python monitor.py
+
+      - name: Commit State Files
+        run: |
+          git config user.name "IAF Bot"
+          git config user.email "bot@github-actions"
+          git add state/
+          if ! git diff --staged --quiet; then
+            git commit -m "Auto: state update"
+            git pull --rebase || true
+            git push
+          fi
