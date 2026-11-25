@@ -43,7 +43,7 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           PROXY_URL: ${{ secrets.PROXY_URL }}
-          CHAT_IDS: "8960222553,-1004472936994"
+          CHAT_IDS: "8960222553"
           RUN_DURATION_SEC: ${{ inputs.fast_test == 'true' && '15' || '225' }}
           CHECK_INTERVAL_SEC: "60"
         run: python monitor.py
