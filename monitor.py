@@ -17,6 +17,7 @@ import time
 import hashlib
 import html as html_lib
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from urllib.parse import urljoin, quote
@@ -64,8 +65,9 @@ SEEN_FILE      = STATE_DIR / "seen_pdfs.txt"
 UPDATE_ID_FILE = STATE_DIR / "last_update_id.txt"
 HASH_FILE      = STATE_DIR / "page_hashes.json"
 CHATS_FILE     = STATE_DIR / "registered_chats.txt"
-STATS_FILE     = STATE_DIR / "stats.json"
-DEMO_FILE      = STATE_DIR / "last_demo_pdfs.json"
+STATS_FILE         = STATE_DIR / "stats.json"
+DEMO_FILE          = STATE_DIR / "last_demo_pdfs.json"
+WORKING_PROXY_FILE = STATE_DIR / "working_proxy.txt"
 
 STATE_DIR.mkdir(exist_ok=True)
 
@@ -96,7 +98,9 @@ CHROME_HEADERS = {
     "Cache-Control": "max-age=0",
 }
 
-LAST_WORKING_METHOD = None  # Remembers which method succeeded ("proxy_env", "curl_cffi", "requests", "web_proxy")
+LAST_WORKING_METHOD = None
+CACHED_IN_PROXY = None
+CACHED_PROXY_POOL = []
 
 # ─── STATE HELPERS ────────────────────────────────────────────────────────
 def load_seen() -> set:
@@ -177,32 +181,146 @@ def load_demo_pdfs() -> list:
 def save_demo_pdfs(items: list):
     DEMO_FILE.write_text(json.dumps(items, indent=2), encoding="utf-8")
 
-# ─── FETCH ENGINE (Multi-Method Bypass) ───────────────────────────────────
-def _proxies_dict():
-    if PROXY_URL:
-        return {"http": PROXY_URL, "https": PROXY_URL}
+# ─── FETCH ENGINE (Direct + Auto Indian Proxy Bypass) ─────────────────────
+def _proxies_dict(proxy_str: str = ""):
+    p = (proxy_str or PROXY_URL).strip()
+    if p:
+        return {"http": p, "https": p}
     return None
+
+def _save_working_proxy(proxy_str: str):
+    global CACHED_IN_PROXY
+    CACHED_IN_PROXY = proxy_str
+    try:
+        WORKING_PROXY_FILE.write_text(proxy_str, encoding="utf-8")
+    except Exception:
+        pass
+
+def _load_saved_proxy() -> str:
+    global CACHED_IN_PROXY
+    if CACHED_IN_PROXY:
+        return CACHED_IN_PROXY
+    if WORKING_PROXY_FILE.exists():
+        p = WORKING_PROXY_FILE.read_text(encoding="utf-8").strip()
+        if p:
+            CACHED_IN_PROXY = p
+            return p
+    return ""
+
+def load_indian_proxies() -> list:
+    """Fetches fresh free Indian (IN) HTTP/SOCKS proxies from multiple public feeds."""
+    global CACHED_PROXY_POOL
+    if CACHED_PROXY_POOL:
+        return CACHED_PROXY_POOL
+
+    found = []
+    seen_p = set()
+
+    def _add(p: str):
+        p = p.strip()
+        if not p or ":" not in p:
+            return
+        if "://" not in p:
+            p = f"http://{p}"
+        if p not in seen_p:
+            seen_p.add(p)
+            found.append(p)
+
+    # 1. Proxifly IN feed via jsDelivr (pre-checked every 5 mins)
+    for url in [
+        "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/countries/IN/data.txt",
+        "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/countries/IN/data.txt",
+    ]:
+        try:
+            r = requests.get(url, timeout=6)
+            if r.status_code == 200 and len(r.text) > 10:
+                for line in r.text.splitlines():
+                    _add(line)
+                break
+        except Exception:
+            pass
+
+    # 2. ProxyScrape v4 (India HTTP & SOCKS5)
+    for proto in ("http", "socks5"):
+        try:
+            u = f"https://api.proxyscrape.com/v4/free-proxy-list/get?request=displayproxies&protocol={proto}&country=in&timeout=5000"
+            r = requests.get(u, timeout=6)
+            if r.status_code == 200 and len(r.text) > 10:
+                for line in r.text.splitlines():
+                    line = line.strip()
+                    if line and ":" in line:
+                        _add(f"{proto}://{line}")
+        except Exception:
+            pass
+
+    # 3. Geonode India proxy API
+    try:
+        u = "https://proxylist.geonode.com/api/proxy-list?country=IN&limit=30&page=1&sort_by=lastChecked&sort_type=desc"
+        r = requests.get(u, timeout=6)
+        if r.status_code == 200:
+            for item in r.json().get("data", []):
+                ip = item.get("ip")
+                port = item.get("port")
+                protos = item.get("protocols") or ["http"]
+                if ip and port:
+                    _add(f"{protos[0]}://{ip}:{port}")
+    except Exception:
+        pass
+
+    # Prioritize http/https/socks5 proxies first
+    found.sort(key=lambda x: 0 if x.startswith(("http://", "https://")) else (1 if x.startswith("socks5") else 2))
+    CACHED_PROXY_POOL = found[:60]
+    log.info("  🌐 Loaded %d Indian proxy candidates", len(CACHED_PROXY_POOL))
+    return CACHED_PROXY_POOL
+
+def _fetch_via_proxy(proxy_str: str, url: str, timeout: int = 7):
+    proxies = _proxies_dict(proxy_str)
+    try:
+        if HAS_CURL_CFFI:
+            resp = cf_requests.get(
+                url,
+                impersonate="chrome",
+                proxies=proxies,
+                timeout=timeout,
+                verify=False,
+                headers={"Accept-Language": "en-US,en;q=0.9,hi;q=0.8"},
+            )
+        else:
+            resp = requests.get(
+                url,
+                headers=CHROME_HEADERS,
+                proxies=proxies,
+                timeout=timeout,
+                verify=False,
+                allow_redirects=True,
+            )
+        if resp.status_code == 200 and len(resp.text) > 200 and "<html" in resp.text.lower():
+            return proxy_str, resp.text
+    except Exception:
+        pass
+    return None, None
 
 def fetch_page(url: str) -> tuple:
     """
     Tries multiple methods to fetch HTML:
-    0. Custom PROXY_URL secret (if set — e.g. Indian/residential proxy)
-    1. curl_cffi Chrome TLS impersonation
-    2. Standard requests with Chrome headers
-    3. Public web proxy fallbacks (allorigins, codetabs, corsproxy)
+    0. Custom PROXY_URL secret (if configured)
+    1. Direct curl_cffi Chrome TLS (fast check; works if IP isn't geo-blocked)
+    2. Cached working Indian proxy (instant)
+    3. Parallel batch scan across live Indian proxies (Proxifly / ProxyScrape / Geonode)
     Returns (status_code_or_none, html_or_none, method_name).
     """
-    global LAST_WORKING_METHOD
+    global LAST_WORKING_METHOD, CACHED_IN_PROXY, CACHED_PROXY_POOL
     last_http_status = None
     proxies = _proxies_dict()
 
     # Method 0: Explicit custom proxy from PROXY_URL secret
     if proxies:
         try:
-            if HAS_CURL_CFFI:
-                resp = cf_requests.get(url, impersonate="chrome", proxies=proxies, timeout=18)
-            else:
-                resp = requests.get(url, headers=CHROME_HEADERS, proxies=proxies, timeout=18, verify=False)
+            resp = (
+                cf_requests.get(url, impersonate="chrome", proxies=proxies, timeout=15, verify=False)
+                if HAS_CURL_CFFI else
+                requests.get(url, headers=CHROME_HEADERS, proxies=proxies, timeout=15, verify=False)
+            )
             last_http_status = resp.status_code
             if resp.status_code == 200 and len(resp.text) > 100:
                 LAST_WORKING_METHOD = "proxy_env"
@@ -212,57 +330,61 @@ def fetch_page(url: str) -> tuple:
         except Exception as e:
             log.warning("  [PROXY_URL] Error: %s", str(e)[:90])
 
-    # Method 1: curl_cffi (Chrome TLS fingerprint)
-    if HAS_CURL_CFFI:
+    # Method 1: Fast direct check (skip repeat direct tries once known 403)
+    if LAST_WORKING_METHOD in (None, "curl_cffi"):
         try:
-            resp = cf_requests.get(
-                url,
-                impersonate="chrome",
-                timeout=15,
-                headers={"Accept-Language": "en-US,en;q=0.9,hi;q=0.8"},
+            resp = (
+                cf_requests.get(url, impersonate="chrome", timeout=10, headers={"Accept-Language": "en-US,en;q=0.9,hi;q=0.8"})
+                if HAS_CURL_CFFI else
+                requests.get(url, headers=CHROME_HEADERS, timeout=10, verify=False, allow_redirects=True)
             )
             last_http_status = resp.status_code
-            if resp.status_code == 200 and len(resp.text) > 100:
+            if resp.status_code == 200 and len(resp.text) > 200:
                 LAST_WORKING_METHOD = "curl_cffi"
-                log.info("  ✅ [curl_cffi] HTTP 200 for %s", url)
-                return 200, resp.text, "Direct (Chrome TLS)"
-            log.info("  [curl_cffi] HTTP %d for %s", resp.status_code, url)
+                log.info("  ✅ [Direct] HTTP 200 for %s", url)
+                return 200, resp.text, "Direct"
+            log.info("  [Direct] HTTP %d for %s -> switching to Indian Proxy pool", resp.status_code, url.split("/")[-1] or "home")
         except Exception as e:
-            log.warning("  [curl_cffi] Error: %s", str(e)[:90])
+            log.warning("  [Direct] Error: %s", str(e)[:80])
 
-    # Method 2: Regular requests with Chrome headers
-    try:
-        resp = requests.get(url, headers=CHROME_HEADERS, timeout=15, verify=False, allow_redirects=True)
-        last_http_status = resp.status_code
-        if resp.status_code == 200 and len(resp.text) > 100:
-            LAST_WORKING_METHOD = "requests"
-            log.info("  ✅ [requests] HTTP 200 for %s", url)
-            return 200, resp.text, "Direct (HTTP)"
-        log.info("  [requests] HTTP %d for %s", resp.status_code, url)
-    except Exception as e:
-        log.warning("  [requests] Error: %s", str(e)[:90])
+    # Method 2: Try previously cached Indian proxy first
+    saved_p = _load_saved_proxy()
+    if saved_p:
+        ok_p, ok_html = _fetch_via_proxy(saved_p, url, timeout=8)
+        if ok_html:
+            LAST_WORKING_METHOD = "in_proxy"
+            log.info("  ✅ [IN-Proxy Cached] HTTP 200 via %s", ok_p.split("@")[-1])
+            return 200, ok_html, "Indian Proxy"
+        CACHED_IN_PROXY = None
 
-    # Method 3: Free web proxy fallbacks
-    web_proxies = [
-        ("allorigins", f"https://api.allorigins.win/raw?url={quote(url, safe='')}"),
-        ("codetabs",   f"https://api.codetabs.com/v1/proxy?quest={quote(url, safe='')}"),
-        ("corsproxy",  f"https://corsproxy.io/?url={quote(url, safe='')}"),
-    ]
-    for pname, proxy_url in web_proxies:
+    # Method 3: Parallel scan across live Indian proxies
+    candidates = load_indian_proxies()
+    if not candidates:
+        CACHED_PROXY_POOL = []
+        candidates = load_indian_proxies()
+
+    batch_size = 20
+    for i in range(0, len(candidates), batch_size):
+        batch = candidates[i:i + batch_size]
+        pool = ThreadPoolExecutor(max_workers=len(batch))
         try:
-            resp = requests.get(proxy_url, timeout=18, headers={"User-Agent": CHROME_HEADERS["User-Agent"]})
-            if resp.status_code == 200 and len(resp.text) > 200 and "<html" in resp.text.lower():
-                LAST_WORKING_METHOD = f"web:{pname}"
-                log.info("  ✅ [web:%s] HTTP 200 for %s", pname, url)
-                return 200, resp.text, f"Web Proxy ({pname})"
-            log.info("  [web:%s] HTTP %d / invalid HTML", pname, resp.status_code)
-        except Exception as e:
-            log.warning("  [web:%s] Error: %s", pname, str(e)[:80])
+            futures = [pool.submit(_fetch_via_proxy, p, url, 7) for p in batch]
+            for fut in as_completed(futures):
+                ok_p, ok_html = fut.result()
+                if ok_html:
+                    _save_working_proxy(ok_p)
+                    LAST_WORKING_METHOD = "in_proxy"
+                    log.info("  ✅ [IN-Proxy Found] HTTP 200 via %s", ok_p)
+                    return 200, ok_html, "Indian Proxy"
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
 
-    return last_http_status, None, "Blocked/Failed"
+    # Reset proxy pool for next run if none worked this batch
+    CACHED_PROXY_POOL = []
+    return last_http_status or 403, None, "Blocked/Failed"
 
 def probe_pdf_exists(url: str) -> bool:
-    """Fast HEAD/Range probe using the working direct method only (avoids proxy spam)."""
+    """Fast HEAD/Range probe using Direct or Custom Proxy only."""
     proxies = _proxies_dict()
     try:
         if LAST_WORKING_METHOD == "proxy_env" and proxies:
@@ -271,55 +393,56 @@ def probe_pdf_exists(url: str) -> bool:
         if LAST_WORKING_METHOD == "curl_cffi" and HAS_CURL_CFFI:
             r = cf_requests.get(url, impersonate="chrome", timeout=6, headers={"Range": "bytes=0-15"})
             return r.status_code in (200, 206) and r.content.startswith(b"%PDF")
-        if LAST_WORKING_METHOD == "requests":
-            r = requests.get(url, headers={**CHROME_HEADERS, "Range": "bytes=0-15"}, timeout=6, verify=False, stream=True)
-            ok = r.status_code in (200, 206) and next(r.iter_content(16), b"").startswith(b"%PDF")
-            r.close()
-            return ok
     except Exception:
         pass
     return False
 
-def fetch_pdf(url: str) -> bytes | None:
-    """Download full PDF bytes using direct or proxy methods."""
-    proxies = _proxies_dict()
-
-    if proxies:
-        try:
-            resp = (cf_requests.get(url, impersonate="chrome", proxies=proxies, timeout=30)
-                    if HAS_CURL_CFFI else
-                    requests.get(url, headers=CHROME_HEADERS, proxies=proxies, timeout=30, verify=False))
-            if resp.status_code == 200 and resp.content.startswith(b"%PDF"):
-                return resp.content
-        except Exception:
-            pass
-
-    if HAS_CURL_CFFI:
-        try:
-            resp = cf_requests.get(url, impersonate="chrome", timeout=30)
-            if resp.status_code == 200 and resp.content.startswith(b"%PDF"):
-                return resp.content
-        except Exception:
-            pass
-
+def _download_pdf_proxy(proxy_str: str, url: str) -> bytes | None:
+    proxies = _proxies_dict(proxy_str)
     try:
-        resp = requests.get(url, headers=CHROME_HEADERS, timeout=30, verify=False)
+        resp = (
+            cf_requests.get(url, impersonate="chrome", proxies=proxies, timeout=25, verify=False)
+            if HAS_CURL_CFFI else
+            requests.get(url, headers=CHROME_HEADERS, proxies=proxies, timeout=25, verify=False)
+        )
+        if resp.status_code == 200 and resp.content.startswith(b"%PDF"):
+            return resp.content
+    except Exception:
+        pass
+    return None
+
+def fetch_pdf(url: str) -> bytes | None:
+    """Download full PDF bytes using Custom Proxy, Direct, or Working Indian Proxies."""
+    if PROXY_URL:
+        data = _download_pdf_proxy(PROXY_URL, url)
+        if data:
+            return data
+
+    # Direct attempt
+    try:
+        resp = (
+            cf_requests.get(url, impersonate="chrome", timeout=15)
+            if HAS_CURL_CFFI else
+            requests.get(url, headers=CHROME_HEADERS, timeout=15, verify=False)
+        )
         if resp.status_code == 200 and resp.content.startswith(b"%PDF"):
             return resp.content
     except Exception:
         pass
 
-    for proxy_url in [
-        f"https://api.allorigins.win/raw?url={quote(url, safe='')}",
-        f"https://api.codetabs.com/v1/proxy?quest={quote(url, safe='')}",
-        f"https://corsproxy.io/?url={quote(url, safe='')}",
-    ]:
-        try:
-            resp = requests.get(proxy_url, timeout=30)
-            if resp.status_code == 200 and resp.content.startswith(b"%PDF"):
-                return resp.content
-        except Exception:
-            pass
+    # Cached Indian proxy
+    saved_p = _load_saved_proxy()
+    if saved_p:
+        data = _download_pdf_proxy(saved_p, url)
+        if data:
+            return data
+
+    # Fallback through top Indian proxy candidates
+    for p in load_indian_proxies()[:15]:
+        data = _download_pdf_proxy(p, url)
+        if data:
+            _save_working_proxy(p)
+            return data
 
     return None
 
@@ -521,7 +644,7 @@ def run_check(chats: set, stats: dict, send_heartbeat: bool = False) -> str:
             continue
 
         page_statuses[page_name] = f"HTTP {status} ✅ ({method})"
-        if not method.startswith("Web Proxy"):
+        if method in ("Direct", "Custom Proxy"):
             any_direct_ok = True
 
         # Check for page content changes
