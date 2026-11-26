@@ -1,8 +1,8 @@
 {
-  "total_checks": 766,
-  "total_runs": 216,
+  "total_checks": 769,
+  "total_runs": 217,
   "pdfs_found": 20,
-  "last_check": "27 Nov 2026, 02:53:40 IST",
+  "last_check": "27 Nov 2026, 02:58:48 IST",
   "last_method": "Indian Proxy",
   "last_page_statuses": {
     "EDCIL Agniveervayu PSL Page": "HTTP 403 (Blocked)",
