@@ -1,8 +1,8 @@
 {
-  "total_checks": 152,
-  "total_runs": 42,
+  "total_checks": 156,
+  "total_runs": 43,
   "pdfs_found": 12,
-  "last_check": "26 Nov 2026, 12:19:05 IST",
+  "last_check": "26 Nov 2026, 12:23:56 IST",
   "last_method": "Indian Proxy",
   "last_page_statuses": {
     "EDCIL Agniveervayu PSL Page": "HTTP 200 \u2705 (Indian Proxy)",
