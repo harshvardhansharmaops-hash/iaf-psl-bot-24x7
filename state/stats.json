@@ -1,12 +1,12 @@
 {
-  "total_checks": 559,
-  "total_runs": 148,
+  "total_checks": 562,
+  "total_runs": 149,
   "pdfs_found": 20,
-  "last_check": "26 Nov 2026, 21:14:09 IST",
-  "last_method": "Proxy Tunnel",
+  "last_check": "26 Nov 2026, 21:18:36 IST",
+  "last_method": "Indian Proxy",
   "last_page_statuses": {
     "EDCIL Agniveervayu PSL Page": "HTTP 200 \u2705 (Indian Proxy)",
-    "EDCIL Agniveervayu Home": "HTTP 200 \u2705 (Proxy Tunnel)"
+    "EDCIL Agniveervayu Home": "HTTP 200 \u2705 (Indian Proxy)"
   },
   "heartbeat": false,
   "commands_synced": true
