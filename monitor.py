@@ -47,11 +47,14 @@ MONITOR_URLS = [
 BASE_EDCIL = "https://iafrecruitment.edcil.co.in/agniveervayu/"
 
 KEYWORDS = [
+    r"enrol(?:l)?ment\s+list.*01[\s/\\-]*2027",
+    r"01[\s/\\-]*2027.*enrol(?:l)?ment",
+    r"enrol(?:l)?ment\s+list",
+    r"call\s+letter.*01[\s/\\-]*2027",
     r"provisional\s+select\s+list",
     r"PSL.*01[\s/\\-]*2027",
     r"01[\s/\\-]*2027.*PSL",
     r"select\s+list.*2027",
-    r"enrol(?:l)?ment\s+list.*2027",
     r"merit\s+list.*2027",
 ]
 
@@ -657,26 +660,42 @@ def extract_all_pdfs_detailed(html: str, page_url: str, page_label: str) -> list
 # ─── PREDICTED PSL PDF URLS ──────────────────────────────────────────────
 def generate_predicted_urls() -> list:
     today = datetime.now(IST)
-    dates = [today.strftime("%d%b%Y"), today.strftime("%b%Y")]
-
-    psl_names = [
-        "AGNIVEERVAYU_(MEN)_(SCIENCE_SUBJECTS).pdf",
-        "AGNIVEERVAYU_(WOMEN)_(SCIENCE_SUBJECTS).pdf",
-        "AGNIVEERVAYU_(MEN)_(OTHER_THAN_SCIENCE_SUBJECTS).pdf",
-        "AGNIVEERVAYU_(WOMEN)_(OTHER_THAN_SCIENCE_SUBJECTS).pdf",
+    dates = [
+        today.strftime("%d%m%Y"),
+        today.strftime("%d%b%Y"),
+        "04122026", "04Dec2026", "Dec2026"
     ]
-    enrol_names = [
-        "SS_MEN.pdf", "SS_MEN_.pdf", "SS_WOMEN.pdf", "SS_WOMEN_.pdf",
-        "OS_MEN.pdf", "OS_MEN_.pdf", "OS_WOMEN.pdf", "OS_WOMEN_.pdf",
+    dates = list(dict.fromkeys(dates))
+
+    subfolders = [
+        "IN%20ENROLMENT/STAR",
+        "ENROLMENT_LIST",
+        "STAR",
+        "IN%20PSL/STAR",
+        "CALL_LETTER"
+    ]
+
+    short_names = [
+        "SS_MEN.pdf", "OS_MEN.pdf", "SS_WOMEN.pdf", "OS_WOMEN.pdf"
+    ]
+
+    full_names = [
+        "ENROLMENT LIST (SCIENCE SUBJECTS) (MEN).pdf",
+        "ENROLMENT LIST (OTHER THAN SCIENCE SUBJECTS) (MEN).pdf",
+        "ENROLMENT LIST (SCIENCE SUBJECTS) (WOMEN).pdf",
+        "ENROLMENT LIST (OTHER THAN SCIENCE SUBJECTS) (WOMEN).pdf",
+        "AGNIVEERVAYU (SCIENCE SUBJECTS) (MEN).pdf",
+        "AGNIVEERVAYU (OTHER THAN SCIENCE SUBJECTS) (MEN).pdf",
     ]
 
     urls = []
     for d in dates:
-        for n in enrol_names:
-            urls.append(f"{BASE_EDCIL}img/psl/{d}/ENROLMENT_LIST/{n}")
-            urls.append(f"{BASE_EDCIL}img/psl/{d}/PSL/{n}")
-        for n in psl_names:
-            urls.append(f"{BASE_EDCIL}img/psl/{d}/PSL/{n}")
+        for folder in subfolders:
+            encoded_folder = quote(folder, safe="/%")
+            for name in short_names:
+                urls.append(f"{BASE_EDCIL}img/psl/{d}/{encoded_folder}/{name}")
+            for name in full_names:
+                urls.append(f"{BASE_EDCIL}img/psl/{d}/{encoded_folder}/{quote(name)}")
 
     return list(dict.fromkeys(urls))
 
@@ -1038,17 +1057,17 @@ def process_telegram_commands(chats: set, stats: dict, poll_timeout: int = 4) ->
             if cmd in ("/start", "/help"):
                 send_msg(
                     chat_id,
-                    "🛩️ <b>IAF Agniveervayu 01/2027 PSL Monitor</b>\n\n"
-                    "Ye bot GitHub Actions par 24×7 chal raha hai — bina laptop ke!\n"
-                    f"Har 5 minute schedule ke andar har {CHECK_INTERVAL_SEC} second me EDCIL check hoti hai.\n\n"
+                    "🛩️ <b>IAF Agniveervayu 01/2027 Enrolment Monitor (Cloud)</b>\n\n"
+                    "Ye bot GitHub Actions par 24×7 cloud me chal raha hai — bina laptop on rakhe!\n"
+                    f"Har 5 minute schedule ke andar har {CHECK_INTERVAL_SEC} second me IAF servers probe hote hain.\n\n"
                     "<b>Commands:</b>\n"
-                    "• <code>/status</code> - Live status aur last check details\n"
-                    "• <code>/check</code> - Site check report dekhein\n"
-                    "• <code>/demo</code> - Website + Code se saari PDFs (Back/Next + Download)\n"
+                    "• <code>/status</code> - Live status aur check summary dekhein\n"
+                    "• <code>/check</code> - Turant fresh server check karwayein\n"
+                    "• <code>/demo</code> - Scanned PDFs check karein\n"
                     "• <code>/dl 1</code> ya <code>/dl all</code> - Scanned PDFs Telegram me mangwayein\n"
-                    "• <code>/heartbeat on</code> / <code>off</code> - Har 5-min status update ON/OFF\n"
+                    "• <code>/heartbeat on</code> / <code>off</code> - 5-min status update ON/OFF\n"
                     "• <code>/help</code> - Ye menu\n\n"
-                    "⚡ <i>PSL release hote hi PDF auto-deliver ho jayegi!</i>"
+                    "⚡ <i>04 December Enrolment List release hote hi PDF turant yahan bhej di jayegi!</i>"
                 )
 
             elif cmd == "/status":
@@ -1062,18 +1081,18 @@ def process_telegram_commands(chats: set, stats: dict, poll_timeout: int = 4) ->
 
                 send_msg(
                     chat_id,
-                    f"📊 <b>IAF PSL GitHub Bot Status</b>\n\n"
+                    f"🛩️ <b>IAF Enrolment 24x7 Cloud Bot Status</b>\n\n"
                     f"• <b>Bot:</b> 🟢 ACTIVE (5-Min Cron + {CHECK_INTERVAL_SEC}s Loop)\n"
                     f"• <b>Check Interval:</b> Har {CHECK_INTERVAL_SEC} second (~4 min window)\n"
                     f"• <b>5-Min Heartbeat Msg:</b> {hb_state}\n"
                     f"• <b>Total Checks:</b> {stats['total_checks']}\n"
                     f"• <b>Last Check:</b> {stats['last_check']}\n"
                     f"• <b>Fetch Method:</b> <code>{stats.get('last_method', 'N/A')}</code>\n"
-                    f"• <b>PSL PDFs Found:</b> {stats['pdfs_found']}\n"
+                    f"• <b>Target:</b> Intake 01/2027 Enrolment List (~04 Dec 2026)\n"
                     f"• <b>Active Chats:</b> {len(chats)}\n"
                     f"• <b>Run #{stats['total_runs']}</b> at {now_ist}\n\n"
                     f"<b>Monitored Pages:</b>\n{status_text}\n\n"
-                    f"🎯 <b>PSL 01/2027:</b> Tracking Active!"
+                    f"🎯 <b>Enrolment List 01/2027:</b> Tracking Active 24/7!"
                 )
 
             elif cmd == "/check":
