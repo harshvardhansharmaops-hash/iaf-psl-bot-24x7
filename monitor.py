@@ -746,7 +746,7 @@ def run_check(chats: set, stats: dict, send_heartbeat: bool = False) -> str:
                         seen.add(key)
                         save_seen(key)
                         alert = (
-                            f"🚨 <b>ALERT: PSL Related Change Detected!</b>\n\n"
+                            f"🚨 <b>ALERT: Enrolment / List Update Detected!</b>\n\n"
                             f"📍 Page: <b>{page_name}</b>\n"
                             f"🔑 Keyword: <code>{html_lib.escape(matches[0])}</code>\n"
                             f"🔗 {page_url}\n\n"
@@ -769,7 +769,7 @@ def run_check(chats: set, stats: dict, send_heartbeat: bool = False) -> str:
                     stats["pdfs_found"] += 1
 
                     caption = (
-                        f"🚨 <b>IAF AGNIVEERVAYU 01/2027 — PSL OUT!</b>\n\n"
+                        f"🎖️ <b>IAF AGNIVEERVAYU 01/2027 — ENROLMENT LIST OUT!</b>\n\n"
                         f"📄 <b>{html_lib.escape(fname)}</b>\n"
                         f"📦 Size: {len(pdf_data)/1024:.1f} KB\n"
                         f"📍 Source: {item['page']} ({item['location']})\n"
@@ -797,7 +797,7 @@ def run_check(chats: set, stats: dict, send_heartbeat: bool = False) -> str:
                         new_pdfs.append(fname)
                         stats["pdfs_found"] += 1
                         caption = (
-                            f"🚨 <b>IAF AGNIVEERVAYU 01/2027 — PSL OUT!</b>\n\n"
+                            f"🎖️ <b>IAF AGNIVEERVAYU 01/2027 — ENROLMENT LIST OUT!</b>\n\n"
                             f"📄 <b>{html_lib.escape(fname)}</b>\n"
                             f"📦 Size: {len(pdf_data)/1024:.1f} KB\n"
                             f"🔗 <code>{html_lib.escape(purl)}</code>"
@@ -821,7 +821,7 @@ def run_check(chats: set, stats: dict, send_heartbeat: bool = False) -> str:
         f"{status_lines}\n"
         f"• Web Change: {change_str}\n"
         f"• Direct URL Probes: <b>{probed_count}</b>\n"
-        f"• New PSL PDFs: <b>{len(new_pdfs)}</b>\n\n"
+        f"• New Enrolment PDFs: <b>{len(new_pdfs)}</b>\n\n"
     )
     if new_pdfs:
         summary += f"🎯 <b>FOUND:</b> {', '.join(new_pdfs)}\n"
@@ -831,7 +831,7 @@ def run_check(chats: set, stats: dict, send_heartbeat: bool = False) -> str:
             f"Bypass karne ke liye GitHub Secret me <code>PROXY_URL</code> (Indian proxy) add karein.</i>"
         )
     else:
-        summary += f"<i>PSL 01/2027 abhi release nahi hui. Tracking active hai!</i>"
+        summary += f"<i>Enrolment List 01/2027 abhi release nahi hui. Tracking active hai!</i>"
 
     if send_heartbeat and stats.get("heartbeat", True):
         hb_msg = (
@@ -1109,7 +1109,7 @@ def process_telegram_commands(chats: set, stats: dict, poll_timeout: int = 4) ->
                 checked_in_cmd = True
 
             elif cmd == "/demo":
-                send_msg(chat_id, "🧪 <i>PSL Page + Home Page (Front-End + Code) scan kar raha hoon...</i>")
+                send_msg(chat_id, "🧪 <i>Enrolment / PSL Page + Home Page (Front-End + Code) scan kar raha hoon...</i>")
                 run_demo(chat_id)
 
             elif cmd == "/dl":
@@ -1119,7 +1119,7 @@ def process_telegram_commands(chats: set, stats: dict, poll_timeout: int = 4) ->
                 mode = arg.strip().lower()
                 if mode == "off":
                     stats["heartbeat"] = False
-                    send_msg(chat_id, "🔕 Har 5-minute ka heartbeat status message <b>OFF</b> kar diya gaya hai. <i>(PSL change/PDF alerts fir bhi turant aate rahenge!)</i>")
+                    send_msg(chat_id, "🔕 Har 5-minute ka heartbeat status message <b>OFF</b> kar diya gaya hai. <i>(Enrolment change/PDF alerts fir bhi turant aate rahenge!)</i>")
                 elif mode == "on":
                     stats["heartbeat"] = True
                     send_msg(chat_id, "🔔 Har 5-minute ka heartbeat status message <b>ON</b> kar diya gaya hai!")
