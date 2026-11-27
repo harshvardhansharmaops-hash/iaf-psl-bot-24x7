@@ -15,6 +15,7 @@ import re
 import json
 import time
 import hashlib
+import difflib
 import html as html_lib
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -23,6 +24,7 @@ from pathlib import Path
 from urllib.parse import urljoin, quote
 
 import requests
+from bs4 import BeautifulSoup
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -68,6 +70,7 @@ STATE_DIR      = Path(__file__).parent / "state"
 SEEN_FILE      = STATE_DIR / "seen_pdfs.txt"
 UPDATE_ID_FILE = STATE_DIR / "last_update_id.txt"
 HASH_FILE      = STATE_DIR / "page_hashes.json"
+SNAPSHOT_FILE  = STATE_DIR / "page_snapshots.json"
 CHATS_FILE     = STATE_DIR / "registered_chats.txt"
 MUTED_FILE     = STATE_DIR / "muted_chats.txt"
 STATS_FILE         = STATE_DIR / "stats.json"
@@ -127,6 +130,55 @@ def load_hashes() -> dict:
 
 def save_hashes(hashes: dict):
     HASH_FILE.write_text(json.dumps(hashes, indent=2), encoding="utf-8")
+
+def load_snapshots() -> dict:
+    if SNAPSHOT_FILE.exists():
+        try:
+            return json.loads(SNAPSHOT_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+def save_snapshots(snapshots: dict):
+    SNAPSHOT_FILE.write_text(json.dumps(snapshots, indent=1, ensure_ascii=False), encoding="utf-8")
+
+def extract_clean_snapshot(html: str) -> list:
+    """Extracts meaningful visible text lines + PDF links (ignores scripts/tokens/whitespace)."""
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style", "noscript", "meta", "input", "svg"]):
+        tag.decompose()
+    lines = []
+    for raw in soup.get_text("\n").splitlines():
+        cleaned = " ".join(raw.split())
+        if cleaned:
+            lines.append(cleaned)
+    for a in soup.find_all("a", href=True):
+        href = a["href"].strip().replace("\\", "/")
+        if ".pdf" in href.lower():
+            label = " ".join(a.get_text().split()) or "PDF"
+            lines.append(f"[PDF] {label} -> {href}")
+    return list(dict.fromkeys(lines))
+
+def compute_before_after(old_lines: list, new_lines: list) -> tuple:
+    removed, added = [], []
+    sm = difflib.SequenceMatcher(None, old_lines, new_lines)
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag in ("replace", "delete"):
+            removed.extend(old_lines[i1:i2])
+        if tag in ("replace", "insert"):
+            added.extend(new_lines[j1:j2])
+    return removed, added
+
+def format_diff_block(before_lines: list, after_lines: list, max_items: int = 7) -> str:
+    b_items = [f"• {html_lib.escape(ln[:170])}" for ln in before_lines[:max_items]]
+    a_items = [f"• {html_lib.escape(ln[:170])}" for ln in after_lines[:max_items]]
+    if len(before_lines) > max_items:
+        b_items.append(f"<i>... (+{len(before_lines) - max_items} more lines)</i>")
+    if len(after_lines) > max_items:
+        a_items.append(f"<i>... (+{len(after_lines) - max_items} more lines)</i>")
+    b_str = "\n".join(b_items) if b_items else "<i>(Naya content add hua — purana kuch delete nahi hua)</i>"
+    a_str = "\n".join(a_items) if a_items else "<i>(Purana content hataya gaya)</i>"
+    return f"❌ <b>Before:</b>\n{b_str}\n\n✅ <b>After:</b>\n{a_str}"
 
 def load_update_id() -> int:
     if UPDATE_ID_FILE.exists():
@@ -743,6 +795,7 @@ def run_check(chats: set, stats: dict, send_heartbeat: bool = False) -> str:
     now_str = datetime.now(IST).strftime("%H:%M:%S")
     seen = load_seen()
     hashes = load_hashes()
+    snapshots = load_snapshots()
     page_statuses = {}
     new_pdfs = []
     changed_pages = []
@@ -764,28 +817,47 @@ def run_check(chats: set, stats: dict, send_heartbeat: bool = False) -> str:
         if method in ("Direct", "Custom Proxy"):
             any_direct_ok = True
 
-        # Check for page content changes
-        new_hash = hashlib.md5(html.encode("utf-8", errors="ignore")).hexdigest()
+        # Check for meaningful visible text/link changes (Before vs After diff)
+        cur_lines = extract_clean_snapshot(html)
+        new_hash = hashlib.md5("\n".join(cur_lines).encode("utf-8", errors="ignore")).hexdigest()
         old_hash = hashes.get(page_name, "")
+        old_lines = snapshots.get(page_name, [])
+
         if old_hash and new_hash != old_hash:
-            log.info("  🔔 [%s] Page content CHANGED!", page_name)
-            changed_pages.append(page_name)
-            for kw in KEYWORDS:
-                matches = re.findall(kw, html, re.IGNORECASE)
-                if matches:
-                    key = hashlib.md5(f"{page_name}|{kw}|{matches[0]}".encode()).hexdigest()
-                    if key not in seen:
-                        seen.add(key)
-                        save_seen(key)
-                        alert = (
-                            f"🚨 <b>ALERT: Enrolment / List Update Detected!</b>\n\n"
-                            f"📍 Page: <b>{page_name}</b>\n"
-                            f"🔑 Keyword: <code>{html_lib.escape(matches[0])}</code>\n"
-                            f"🔗 {page_url}\n\n"
-                            f"⚡ <i>Checking for downloadable PDFs...</i>"
-                        )
-                        broadcast(alert, chats)
+            if old_lines:
+                before_lines, after_lines = compute_before_after(old_lines, cur_lines)
+            else:
+                before_lines, after_lines = [], []
+
+            if before_lines or after_lines:
+                log.info("  🔔 [%s] Visible content CHANGED! (-%d / +%d lines)", page_name, len(before_lines), len(after_lines))
+                changed_pages.append(page_name)
+                diff_key = hashlib.md5(f"{page_name}|{before_lines[:3]}|{after_lines[:3]}".encode("utf-8", errors="ignore")).hexdigest()
+                if diff_key not in seen:
+                    seen.add(diff_key)
+                    save_seen(diff_key)
+                    diff_text = format_diff_block(before_lines, after_lines)
+                    added_blob = "\n".join(after_lines)
+                    kw_hits = []
+                    for kw in KEYWORDS:
+                        kw_hits.extend(re.findall(kw, added_blob, re.IGNORECASE))
+                    header = (
+                        f"🚨 <b>ALERT: Enrolment / List Update Detected!</b>"
+                        if kw_hits else
+                        f"📝 <b>{page_name} — UPDATE DETECTED!</b>"
+                    )
+                    alert = (
+                        f"{header}\n\n"
+                        f"📍 Page: <b>{page_name}</b>\n\n"
+                        f"{diff_text}\n\n"
+                        f"🔗 {page_url}"
+                    )
+                    broadcast(alert, chats)
+            else:
+                log.info("  ℹ️ [%s] Only baseline upgraded to clean snapshot (no visible alert).", page_name)
+
         hashes[page_name] = new_hash
+        snapshots[page_name] = cur_lines
 
         # Extract all PDF links & auto-send PSL PDFs
         for item in extract_all_pdfs_detailed(html, page_url, page_name):
@@ -810,6 +882,7 @@ def run_check(chats: set, stats: dict, send_heartbeat: bool = False) -> str:
                     broadcast_pdf(pdf_data, fname, caption, chats)
 
     save_hashes(hashes)
+    save_snapshots(snapshots)
 
     # 2. Fast probe predicted URLs ONLY if direct/custom proxy access succeeded
     predicted = generate_predicted_urls()
