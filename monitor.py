@@ -159,7 +159,7 @@ def load_stats() -> dict:
         "last_check": "Never",
         "last_method": "Not run yet",
         "last_page_statuses": {},
-        "heartbeat": True,
+        "heartbeat": False,
     }
     if STATS_FILE.exists():
         try:
@@ -386,14 +386,15 @@ def fetch_page(url: str) -> tuple:
         except Exception as e:
             log.warning("  [Direct] Error: %s", str(e)[:80])
 
-    # Method 2: Try previously cached proxy first
+    # Method 2: Try previously cached proxy first (with 1 quick retry)
     saved_p = _load_saved_proxy()
     if saved_p:
-        ok_p, ok_html, _ = _fetch_via_proxy(saved_p, url, timeout=8)
-        if ok_html:
-            LAST_WORKING_METHOD = "in_proxy"
-            log.info("  ✅ [Proxy Cached] HTTP 200 via %s", ok_p.split("@")[-1])
-            return 200, ok_html, "Indian Proxy"
+        for t in (8, 11):
+            ok_p, ok_html, _ = _fetch_via_proxy(saved_p, url, timeout=t)
+            if ok_html:
+                LAST_WORKING_METHOD = "in_proxy"
+                log.info("  ✅ [Proxy Cached] HTTP 200 via %s", ok_p.split("@")[-1])
+                return 200, ok_html, "Indian Proxy"
         CACHED_IN_PROXY = None
 
     # Method 3: Parallel scan across HTTPS/SOCKS5/IN proxies
@@ -423,6 +424,11 @@ def fetch_page(url: str) -> tuple:
 
     if seen_codes:
         log.info("  📊 Proxy response summary: %s", seen_codes)
+
+    # Method 4: Jina Reader HTML fallback if proxy pool failed
+    j_status, j_html = _fetch_via_jina(url)
+    if j_status == 200 and j_html:
+        return 200, j_html, "Jina Relay"
 
     # Reset proxy pool for next run if none worked this batch
     CACHED_PROXY_POOL = []
@@ -604,6 +610,7 @@ def is_psl_pdf(name: str) -> bool:
         "normalisation", "exam", "instructions", "omr", "tutorial", "mock",
         "diploma", "checklist", "nc_", "non-combatant",
         "2023", "2024", "2025", "01_2025", "02_2025", "01_2026",
+        "26112026", "26nov2026", "not in psl", "not_in_psl",
     ]
     if any(b in clean for b in blacklist):
         return False
