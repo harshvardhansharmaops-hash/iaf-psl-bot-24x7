@@ -1,12 +1,12 @@
 {
-  "total_checks": 440,
-  "total_runs": 155,
+  "total_checks": 443,
+  "total_runs": 156,
   "pdfs_found": 0,
-  "last_check": "28 Nov 2026, 02:34:58 IST",
-  "last_method": "Blocked/Failed",
+  "last_check": "28 Nov 2026, 02:39:12 IST",
+  "last_method": "Indian Proxy",
   "last_page_statuses": {
-    "EDCIL Agniveervayu PSL Page": "HTTP 403 (Blocked)",
-    "EDCIL Agniveervayu Home": "HTTP 403 (Blocked)"
+    "EDCIL Agniveervayu PSL Page": "HTTP 200 \u2705 (Indian Proxy)",
+    "EDCIL Agniveervayu Home": "HTTP 200 \u2705 (Indian Proxy)"
   },
   "heartbeat": false,
   "commands_synced": true
