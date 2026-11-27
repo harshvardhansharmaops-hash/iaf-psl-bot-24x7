@@ -35,6 +35,7 @@ except ImportError:
 # ─── CONFIGURATION ────────────────────────────────────────────────────────
 BOT_TOKEN          = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 PROXY_URL          = os.getenv("PROXY_URL", "").strip()  # Optional HTTP/HTTPS/SOCKS proxy secret
+ADMIN_ID           = os.getenv("ADMIN_ID", "8960222553").strip()
 CHAT_IDS           = [c.strip() for c in os.getenv("CHAT_IDS", "8960222553").split(",") if c.strip()]
 RUN_DURATION_SEC   = int(os.getenv("RUN_DURATION_SEC", "225"))   # ~3m 45s active loop per 5-min cron run
 CHECK_INTERVAL_SEC = int(os.getenv("CHECK_INTERVAL_SEC", "60"))  # Check EDCIL every 60 seconds
@@ -68,6 +69,7 @@ SEEN_FILE      = STATE_DIR / "seen_pdfs.txt"
 UPDATE_ID_FILE = STATE_DIR / "last_update_id.txt"
 HASH_FILE      = STATE_DIR / "page_hashes.json"
 CHATS_FILE     = STATE_DIR / "registered_chats.txt"
+MUTED_FILE     = STATE_DIR / "muted_chats.txt"
 STATS_FILE         = STATE_DIR / "stats.json"
 DEMO_FILE          = STATE_DIR / "last_demo_pdfs.json"
 WORKING_PROXY_FILE = STATE_DIR / "working_proxy.txt"
@@ -150,6 +152,30 @@ def save_registered_chat(chat_id: str, all_chats: set):
         all_chats.add(chat_id)
         with open(CHATS_FILE, "a", encoding="utf-8") as f:
             f.write(chat_id + "\n")
+
+def load_muted_chats() -> set:
+    if MUTED_FILE.exists():
+        return set(line.strip() for line in MUTED_FILE.read_text(encoding="utf-8").splitlines() if line.strip())
+    return set()
+
+def save_muted_chat(chat_id: str):
+    cid = str(chat_id).strip()
+    if not cid or cid == ADMIN_ID:
+        return
+    muted = load_muted_chats()
+    if cid not in muted:
+        muted.add(cid)
+        MUTED_FILE.write_text("\n".join(sorted(muted)) + "\n", encoding="utf-8")
+
+def remove_muted_chat(chat_id: str):
+    cid = str(chat_id).strip()
+    muted = load_muted_chats()
+    if cid in muted:
+        muted.discard(cid)
+        MUTED_FILE.write_text("\n".join(sorted(muted)) + ("\n" if muted else ""), encoding="utf-8")
+
+def clear_muted_chats():
+    MUTED_FILE.write_text("", encoding="utf-8")
 
 def load_stats() -> dict:
     default = {
@@ -541,7 +567,10 @@ def send_msg(chat_id: str, text: str, reply_markup: dict = None) -> str:
         return "error"
 
 def broadcast(text: str, chats: set):
-    for cid in list(chats):
+    muted = load_muted_chats()
+    targets = set(c for c in chats if c not in muted or c == ADMIN_ID)
+    targets.add(ADMIN_ID)
+    for cid in list(targets):
         res = send_msg(cid, text)
         if res == "kicked":
             remove_registered_chat(cid, chats)
@@ -564,7 +593,10 @@ def send_pdf(chat_id: str, pdf_bytes: bytes, filename: str, caption: str) -> boo
         return False
 
 def broadcast_pdf(pdf_bytes: bytes, filename: str, caption: str, chats: set):
-    for cid in list(chats):
+    muted = load_muted_chats()
+    targets = set(c for c in chats if c not in muted or c == ADMIN_ID)
+    targets.add(ADMIN_ID)
+    for cid in list(targets):
         send_pdf(cid, pdf_bytes, filename, caption)
         time.sleep(0.3)
 
@@ -1049,9 +1081,11 @@ def process_telegram_commands(chats: set, stats: dict, poll_timeout: int = 4) ->
                     handle_dl_command(cb_chat, cb_data.split(":", 1)[1])
                 continue
 
-            msg = update.get("message", {})
+            msg = update.get("message") or update.get("channel_post") or {}
             text = msg.get("text", "").strip()
             chat_id = str(msg.get("chat", {}).get("id", ""))
+            from_id = str(msg.get("from", {}).get("id", ""))
+            chat_title = msg.get("chat", {}).get("title") or msg.get("chat", {}).get("first_name") or chat_id
 
             if not chat_id or not text:
                 continue
@@ -1059,7 +1093,8 @@ def process_telegram_commands(chats: set, stats: dict, poll_timeout: int = 4) ->
             save_registered_chat(chat_id, chats)
             parts = text.split(maxsplit=1)
             cmd = parts[0].lower().split("@")[0].strip()
-            arg = parts[1] if len(parts) > 1 else ""
+            arg = parts[1].strip() if len(parts) > 1 else ""
+            is_owner = (from_id == ADMIN_ID or chat_id == ADMIN_ID or str(msg.get("sender_chat", {}).get("id", "")) == chat_id)
 
             if cmd in ("/start", "/help"):
                 send_msg(
@@ -1073,6 +1108,8 @@ def process_telegram_commands(chats: set, stats: dict, poll_timeout: int = 4) ->
                     "• <code>/demo</code> - Scanned PDFs check karein\n"
                     "• <code>/dl 1</code> ya <code>/dl all</code> - Scanned PDFs Telegram me mangwayein\n"
                     "• <code>/heartbeat on</code> / <code>off</code> - 5-min status update ON/OFF\n"
+                    "• <code>/mute</code> - Group alerts mute karein (updates sirf personal chat me aayenge)\n"
+                    "• <code>/unmute</code> - Group alerts wapas normal chalu karein\n"
                     "• <code>/help</code> - Ye menu\n\n"
                     "⚡ <i>04 December Enrolment List release hote hi PDF turant yahan bhej di jayegi!</i>"
                 )
@@ -1085,6 +1122,8 @@ def process_telegram_commands(chats: set, stats: dict, poll_timeout: int = 4) ->
                 else:
                     status_text = "\n".join(f"  • {name}: <i>Pending first run</i>" for name, _ in MONITOR_URLS)
                 hb_state = "🟢 ON" if stats.get("heartbeat", True) else "🔴 OFF"
+                muted = load_muted_chats()
+                mute_line = f"🔇 <b>Muted Groups:</b> {len(muted)}" if muted else "🔔 <b>Group Alerts:</b> Normal (All Active)"
 
                 send_msg(
                     chat_id,
@@ -1092,6 +1131,7 @@ def process_telegram_commands(chats: set, stats: dict, poll_timeout: int = 4) ->
                     f"• <b>Bot:</b> 🟢 ACTIVE (5-Min Cron + {CHECK_INTERVAL_SEC}s Loop)\n"
                     f"• <b>Check Interval:</b> Har {CHECK_INTERVAL_SEC} second (~4 min window)\n"
                     f"• <b>5-Min Heartbeat Msg:</b> {hb_state}\n"
+                    f"• {mute_line}\n"
                     f"• <b>Total Checks:</b> {stats['total_checks']}\n"
                     f"• <b>Last Check:</b> {stats['last_check']}\n"
                     f"• <b>Fetch Method:</b> <code>{stats.get('last_method', 'N/A')}</code>\n"
@@ -1127,6 +1167,48 @@ def process_telegram_commands(chats: set, stats: dict, poll_timeout: int = 4) ->
                     cur = "ON" if stats.get("heartbeat", True) else "OFF"
                     send_msg(chat_id, f"ℹ️ 5-Min Heartbeat abhi <b>{cur}</b> hai.\nBadalne ke liye bhejein: <code>/heartbeat on</code> ya <code>/heartbeat off</code>")
 
+            elif cmd == "/mute":
+                if not is_owner:
+                    continue
+                if chat_id != ADMIN_ID:
+                    save_muted_chat(chat_id)
+                    send_msg(
+                        ADMIN_ID,
+                        f"🔇 <b>Group Muted!</b>\n\n"
+                        f"• <b>Group:</b> {html_lib.escape(chat_title)} (<code>{chat_id}</code>)\n"
+                        f"Ab is group me koi PDF ya alert nahi jayega — saare updates sirf aapki personal chat me aayenge.\n\n"
+                        f"Normal karne ke liye group me <code>/unmute</code> ya yahan <code>/unmute {chat_id}</code> bhejein."
+                    )
+                else:
+                    target = arg.strip()
+                    if target and target.lower() != "all":
+                        save_muted_chat(target)
+                        send_msg(ADMIN_ID, f"🔇 Chat <code>{html_lib.escape(target)}</code> mute kar diya gaya hai! Alerts ab sirf personal chat me aayenge.")
+                    else:
+                        group_chats = [c for c in chats if c != ADMIN_ID]
+                        if not group_chats:
+                            send_msg(ADMIN_ID, "ℹ️ Abhi koi extra group connected nahi hai.\nJis group ko mute karna ho wahan jaakar <code>/mute</code> bhejein (ya <code>/mute -100xxxx</code> use karein).")
+                        else:
+                            for gc in group_chats:
+                                save_muted_chat(gc)
+                            send_msg(ADMIN_ID, f"🔇 <b>{len(group_chats)} group(s) mute</b> kar diye gaye hain!\nAb saare updates/PDFs sirf aapki personal chat me aayenge. Normal karne ke liye <code>/unmute</code> bhejein.")
+
+            elif cmd == "/unmute":
+                if not is_owner:
+                    continue
+                if chat_id != ADMIN_ID:
+                    remove_muted_chat(chat_id)
+                    send_msg(chat_id, "🔔 <b>Bot Unmuted!</b> Ab is group me updates aur PDFs normal tarah aayenge.")
+                    send_msg(ADMIN_ID, f"🔔 Group <b>{html_lib.escape(chat_title)}</b> (<code>{chat_id}</code>) unmute kar diya gaya hai!")
+                else:
+                    target = arg.strip()
+                    if target and target.lower() != "all":
+                        remove_muted_chat(target)
+                        send_msg(ADMIN_ID, f"🔔 Chat <code>{html_lib.escape(target)}</code> unmute kar diya gaya hai!")
+                    else:
+                        clear_muted_chats()
+                        send_msg(ADMIN_ID, "🔔 Sabhi muted groups <b>UNMUTE</b> kar diye gaye hain! Ab sab jagah normal ki tarah updates jayenge.")
+
         save_update_id(last_id)
 
     except Exception as e:
@@ -1143,6 +1225,8 @@ def setup_commands():
             {"command": "demo",      "description": "🧪 Website + Code ki saari PDFs scan karein"},
             {"command": "dl",        "description": "📥 Scanned PDF Telegram me mangwayein (/dl 1 or all)"},
             {"command": "heartbeat", "description": "🔔 Har 5-min status msg ON/OFF karein"},
+            {"command": "mute",      "description": "🔇 Group alerts mute karein (sirf personal chat)"},
+            {"command": "unmute",    "description": "🔊 Group alerts wapas normal on karein"},
             {"command": "help",      "description": "ℹ️ Help aur bot info"},
         ]
         requests.post(
